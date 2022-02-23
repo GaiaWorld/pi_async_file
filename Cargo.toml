@@ -1,0 +1,9 @@
+[package]
+name = "pi_async_file"
+version = "0.1.0"
+authors = ["vmos <vmos@fairblock.io>"]
+edition = "2018"
+
+[dependencies]
+parking_lot = "0.11"
+pi_async = { path = "../pi_async" }
