@@ -3,8 +3,9 @@ use std::sync::Arc;
 use std::io::{ErrorKind, Write};
 use std::time::Duration;
 
-use r#async::rt::multi_thread::{MultiTaskRuntimeBuilder, MultiTaskRuntime};
-use async_file::file::{create_dir, rename, remove_file, remove_dir, AsyncFileOptions, WriteOptions, AsyncFile};
+use pi_async::rt::{AsyncRuntime,
+                   multi_thread::{MultiTaskRuntimeBuilder, MultiTaskRuntime}};
+use pi_async_file::file::{create_dir, rename, remove_file, remove_dir, AsyncFileOptions, WriteOptions, AsyncFile};
 
 #[test]
 fn test_async_file() {
