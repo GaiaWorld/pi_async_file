@@ -160,6 +160,8 @@ fn test_async_file_write_truncate() {
     let rt_copy = rt.clone();
     let vec = Vec::from("Hello 什么是 Async File 异步文件?");
     let buf = Arc::from(&vec[..]);
+    let vec1 = Vec::from("Async File 就是异步文件!");
+    let buf1 = Arc::from(&vec1[..]);
     let future = async move {
         if let Err(e) = remove_dir(rt_copy.clone(), "./test_async_file/test/".to_string()).await {
             if e.kind() != ErrorKind::NotFound {
@@ -188,7 +190,11 @@ fn test_async_file_write_truncate() {
                     panic!("invalid file, reason: invalid file meta");
                 }
 
-                match file.write(0, buf, WriteOptions::Truncate).await {
+                if let Err(e) = file.write(0, buf, WriteOptions::Sync(true)).await {
+                    panic!("write file failed, file: {:?}, reason: {:?}", &test_file, e);
+                }
+
+                match file.write(0, buf1, WriteOptions::Truncate).await {
                     Err(e) => panic!("write file failed, file: {:?}, reason: {:?}", &test_file, e),
                     Ok(len) => assert_eq!(len as u64, file.get_size()),
                 }
@@ -204,7 +210,7 @@ fn test_async_file_write_truncate() {
                         panic!("read file failed, file: {:?}, reason: {:?}", &test_file, e);
                     },
                     Ok(bin) => {
-                        assert_eq!("Hello 什么是 Async File 异步文件?".to_string(), unsafe { String::from_utf8_unchecked(bin) });
+                        assert_eq!("Async File 就是异步文件!".to_string(), unsafe { String::from_utf8_unchecked(bin) });
                     },
                 }
 

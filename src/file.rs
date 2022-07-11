@@ -486,7 +486,6 @@ struct InnerFile<O: Default + 'static> {
     runtime:        MultiTaskRuntime<O>,    //运行时
     options:        AsyncFileOptions,       //文件打开选项
     path:           PathBuf,                //文件路径
-    size:           AtomicU64,              //文件当前大小
     inner:          RwLock<File>,           //文件内部句柄
 }
 
@@ -707,12 +706,10 @@ impl<P: AsRef<Path> + Send + 'static, O: Default + 'static> Future for AsyncOpen
                 },
                 Ok(file) => {
                     //打开文件成功，则设置等待异步打开文件的任务的值
-                    let size = AtomicU64::new(file.metadata().ok().unwrap().len());
                     *result.0.borrow_mut() = Some(Ok(AsyncFile(Arc::new(InnerFile {
                         runtime: runtime.clone(),
                         options,
                         path,
-                        size,
                         inner: RwLock::new(file),
                     }))));
                 },
@@ -953,7 +950,6 @@ impl<O: Default + 'static> Future for AsyncWriteFile<O> {
             match r {
                 Ok(writed_len) if writed_len < (buf.len() - buf_pos as usize) => {
                     //写指定字节未完成，则继续写剩余字节
-                    file.0.size.fetch_add(writed_len as u64, Ordering::Release); //更新当前文件大小
                     *result.0.borrow_mut() = Some(Self::new(runtime.clone(),
                                                             buf,
                                                             buf_pos + writed_len as u64,
@@ -964,7 +960,6 @@ impl<O: Default + 'static> Future for AsyncWriteFile<O> {
                 },
                 Ok(writed_len) => {
                     //写指定字节完成，则根据写选项同步文件，并设置等待异步写指定字节的任务的值
-                    let file_size = file.0.size.fetch_add(writed_len as u64, Ordering::Release); //更新当前文件大小
                     let sync_result = match options {
                         WriteOptions::None => Ok(writed + writed_len),
                         WriteOptions::Flush => file.0.inner.write().flush().and(Ok(writed + writed_len)),
@@ -983,7 +978,7 @@ impl<O: Default + 'static> Future for AsyncWriteFile<O> {
                         },
                         WriteOptions::SyncAll(false) => file.0.inner.read().sync_all().and(Ok(writed + writed_len)),
                         WriteOptions::Truncate => {
-                            let new_file_size = file_size + writed_len as u64;
+                            let new_len = pos + writed_len as u64;
                             let mut locked = file
                                 .0
                                 .inner
@@ -991,7 +986,7 @@ impl<O: Default + 'static> Future for AsyncWriteFile<O> {
                             locked
                                 .flush()
                                 .and_then(|_| locked.sync_data())
-                                .and_then(|_| locked.set_len(new_file_size))
+                                .and_then(|_| locked.set_len(new_len))
                                 .and(Ok(writed + writed_len))
                         },
                     };
@@ -1108,13 +1103,11 @@ impl<O: Default + 'static> Future for AsyncWriteBatchFile<O> {
                 match r {
                     Ok(writed_len) if writed_len < (buf.len() - buf_pos as usize) => {
                         //写指定字节未完成，则继续写剩余字节
-                        file.0.size.fetch_add(writed_len as u64, Ordering::Release); //更新当前文件大小
                         blocked = Some((index, writed_len));
                         break;
                     },
                     Ok(writed_len) => {
                         //写指定字节完成，并设置等待异步写指定字节的任务的值
-                        file.0.size.fetch_add(writed_len as u64, Ordering::Release); //更新当前文件大小
                         writed += writed_len;
                     },
                     Err(ref e) if e.kind() == ErrorKind::Interrupted => {
@@ -1159,7 +1152,7 @@ impl<O: Default + 'static> Future for AsyncWriteBatchFile<O> {
                     },
                     WriteOptions::SyncAll(false) => file.0.inner.read().sync_all().and(Ok(writed)),
                     WriteOptions::Truncate => {
-                        let new_file_size = file.0.size.load(Ordering::Acquire);
+                        let new_len = pos + writed as u64;
                         let mut locked = file
                             .0
                             .inner
@@ -1167,7 +1160,7 @@ impl<O: Default + 'static> Future for AsyncWriteBatchFile<O> {
                         locked
                             .flush()
                             .and_then(|_| locked.sync_data())
-                            .and_then(|_| locked.set_len(new_file_size))
+                            .and_then(|_| locked.set_len(new_len))
                             .and(Ok(writed))
                     },
                 };
