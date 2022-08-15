@@ -1,6 +1,6 @@
 [package]
 name = "pi_async_file"
-version = "0.3.0"
+version = "0.4.0"
 authors = ["zuon<zuon@yinengyun.com>"]
 edition = "2018"
 description = "A async file tools library."
@@ -10,4 +10,4 @@ keywords = ["pi", "async", "future", "file", "fs"]
 
 [dependencies]
 parking_lot = "0.11"
-pi_async = "0.3"
+pi_async = "0.5"
