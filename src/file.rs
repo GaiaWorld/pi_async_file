@@ -6,26 +6,25 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::future::Future;
 use std::time::SystemTime;
-use std::cell::{RefCell, Ref};
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::slice::from_raw_parts;
 #[cfg(any(unix))]
 use std::os::unix::fs::FileExt;
 #[cfg(any(windows))]
 use std::os::windows::fs::FileExt;
-use std::task::{Context, Poll, Waker};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::task::{Context, Poll};
 use std::fmt::{Debug, Formatter, Result as FmtResult};
-use std::fs::{File, OpenOptions, Metadata,
+use std::fs::{File, OpenOptions,
               rename as sync_rename,
               create_dir_all as sync_create_dir_all,
               remove_file as sync_remove_file,
               copy as sync_copy,
               remove_dir as sync_remove_dir};
-use std::io::{Seek, Write, Result, SeekFrom, Error, ErrorKind};
+use std::io::{Write, Result, Error, ErrorKind};
 
 use parking_lot::RwLock;
-use pi_async::rt::{AsyncRuntime, multi_thread::MultiTaskRuntime};
+use pi_async_rt::rt::{AsyncRuntime, multi_thread::MultiTaskRuntime};
 
 /*
 * 异步重命名指定的文件的结果
@@ -59,7 +58,7 @@ impl<P: AsRef<Path> + Send + 'static, O: Default + 'static> Future for AsyncRena
         }
 
         //异步重命名指定文件或目录
-        let task_id = self.as_ref().runtime.alloc();
+        let task_id = self.as_ref().runtime.alloc::<O>();
         let task_id_copy = task_id.clone();
         let runtime = self.as_ref().runtime.clone();
         let from = self.as_ref().from.as_ref().to_path_buf();
@@ -78,7 +77,7 @@ impl<P: AsRef<Path> + Send + 'static, O: Default + 'static> Future for AsyncRena
             }
 
             //唤醒等待异步重命名文件或目录的任务
-            runtime.wakeup(&task_id_copy);
+            runtime.wakeup::<O>(&task_id_copy);
 
             //返回当前异步任务的默认值
             Default::default()
@@ -86,7 +85,7 @@ impl<P: AsRef<Path> + Send + 'static, O: Default + 'static> Future for AsyncRena
 
         //挂起当前任务，并返回值未就绪
         self.as_ref().runtime.pending::<()>(&task_id, cx.waker().clone());
-        if let Err(e) = self.as_ref().runtime.spawn(task_id, task) {
+        if let Err(e) = self.as_ref().runtime.spawn_by_id(task_id, task) {
             //派发异步重命名文件或目录的任务失败，则立即返回错误原因
             return Poll::Ready(Err(Error::new(ErrorKind::Other, format!("Async Rename File or Dir Error, from: {:?}, to: {:?}, reason: {:?}", self.as_ref().from.as_ref(), self.as_ref().to.as_ref(), e))));
         }
@@ -145,7 +144,7 @@ impl<P: AsRef<Path> + Send + 'static, O: Default + 'static> Future for AsyncCrea
         }
 
         //异步创建指定目录
-        let task_id = self.as_ref().runtime.alloc();
+        let task_id = self.as_ref().runtime.alloc::<O>();
         let task_id_copy = task_id.clone();
         let runtime = self.as_ref().runtime.clone();
         let path = self.as_ref().path.as_ref().to_path_buf();
@@ -163,7 +162,7 @@ impl<P: AsRef<Path> + Send + 'static, O: Default + 'static> Future for AsyncCrea
             }
 
             //唤醒等待异步创建目录的任务
-            runtime.wakeup(&task_id_copy);
+            runtime.wakeup::<O>(&task_id_copy);
 
             //返回当前异步任务的默认值
             Default::default()
@@ -171,7 +170,7 @@ impl<P: AsRef<Path> + Send + 'static, O: Default + 'static> Future for AsyncCrea
 
         //挂起当前任务
         self.as_ref().runtime.pending::<()>(&task_id, cx.waker().clone());
-        if let Err(e) = self.as_ref().runtime.spawn(task_id, task) {
+        if let Err(e) = self.as_ref().runtime.spawn_by_id(task_id, task) {
             //派发异步创建目录的任务失败，则立即返回错误原因
             return Poll::Ready(Err(Error::new(ErrorKind::Other, format!("Async Create Dir Error, dir: {:?}, reason: {:?}", self.as_ref().path.as_ref(), e))));
         }
@@ -229,7 +228,7 @@ impl<P: AsRef<Path> + Send + 'static, O: Default + 'static> Future for AsyncRemo
         }
 
         //异步移除指定目录
-        let task_id = self.as_ref().runtime.alloc();
+        let task_id = self.as_ref().runtime.alloc::<O>();
         let task_id_copy = task_id.clone();
         let runtime = self.as_ref().runtime.clone();
         let path = self.as_ref().path.as_ref().to_path_buf();
@@ -247,7 +246,7 @@ impl<P: AsRef<Path> + Send + 'static, O: Default + 'static> Future for AsyncRemo
             }
 
             //唤醒等待异步移除目录的任务
-            runtime.wakeup(&task_id_copy);
+            runtime.wakeup::<O>(&task_id_copy);
 
             //返回当前异步任务的默认值
             Default::default()
@@ -255,7 +254,7 @@ impl<P: AsRef<Path> + Send + 'static, O: Default + 'static> Future for AsyncRemo
 
         //挂起当前任务，并返回值未就绪
         self.as_ref().runtime.pending::<()>(&task_id, cx.waker().clone());
-        if let Err(e) = self.as_ref().runtime.spawn(task_id, task) {
+        if let Err(e) = self.as_ref().runtime.spawn_by_id(task_id, task) {
             //派发异步移除目录的任务失败，则立即返回错误原因
             return Poll::Ready(Err(Error::new(ErrorKind::Other, format!("Async Remove Dir Error, dir: {:?}, reason: {:?}", self.as_ref().path.as_ref(), e))));
         }
@@ -314,7 +313,7 @@ impl<P: AsRef<Path> + Send + 'static, O: Default + 'static> Future for AsyncCopy
         }
 
         //异步复制指定文件
-        let task_id = self.as_ref().runtime.alloc();
+        let task_id = self.as_ref().runtime.alloc::<O>();
         let task_id_copy = task_id.clone();
         let runtime = self.as_ref().runtime.clone();
         let from = self.as_ref().from.as_ref().to_path_buf();
@@ -333,7 +332,7 @@ impl<P: AsRef<Path> + Send + 'static, O: Default + 'static> Future for AsyncCopy
             }
 
             //唤醒等待异步复制文件的任务
-            runtime.wakeup(&task_id_copy);
+            runtime.wakeup::<O>(&task_id_copy);
 
             //返回当前异步任务的默认值
             Default::default()
@@ -341,7 +340,7 @@ impl<P: AsRef<Path> + Send + 'static, O: Default + 'static> Future for AsyncCopy
 
         //挂起当前任务，并返回值未就绪
         self.as_ref().runtime.pending::<()>(&task_id, cx.waker().clone());
-        if let Err(e) = self.as_ref().runtime.spawn(task_id, task) {
+        if let Err(e) = self.as_ref().runtime.spawn_by_id(task_id, task) {
             //派发异步复制文件的任务失败，则立即返回错误原因
             return Poll::Ready(Err(Error::new(ErrorKind::Other, format!("Async Copy File Error, from: {:?}, to: {:?}, reason: {:?}", self.as_ref().from.as_ref(), self.as_ref().to.as_ref(), e))));
         }
@@ -400,7 +399,7 @@ impl<P: AsRef<Path> + Send + 'static, O: Default + 'static> Future for AsyncRemo
         }
 
         //异步移除指定文件
-        let task_id = self.as_ref().runtime.alloc();
+        let task_id = self.as_ref().runtime.alloc::<O>();
         let task_id_copy = task_id.clone();
         let runtime = self.as_ref().runtime.clone();
         let path = self.as_ref().path.as_ref().to_path_buf();
@@ -418,7 +417,7 @@ impl<P: AsRef<Path> + Send + 'static, O: Default + 'static> Future for AsyncRemo
             }
 
             //唤醒等待异步移除文件的任务
-            runtime.wakeup(&task_id_copy);
+            runtime.wakeup::<O>(&task_id_copy);
 
             //返回当前异步任务的默认值
             Default::default()
@@ -426,7 +425,7 @@ impl<P: AsRef<Path> + Send + 'static, O: Default + 'static> Future for AsyncRemo
 
         //挂起当前任务，并返回值未就绪
         self.as_ref().runtime.pending::<()>(&task_id, cx.waker().clone());
-        if let Err(e) = self.as_ref().runtime.spawn(task_id, task) {
+        if let Err(e) = self.as_ref().runtime.spawn_by_id(task_id, task) {
             //派发异步移除文件的任务失败，则立即返回错误原因
             return Poll::Ready(Err(Error::new(ErrorKind::Other, format!("Async Remove File Error, path: {:?}, reason: {:?}", self.as_ref().path.as_ref(), e))));
         }
@@ -686,7 +685,7 @@ impl<P: AsRef<Path> + Send + 'static, O: Default + 'static> Future for AsyncOpen
             AsyncFileOptions::TruncateWrite => (false, true, false, true, true),
             AsyncFileOptions::TruncateReadWrite => (true, true, false, true, true),
         };
-        let task_id = self.as_ref().runtime.alloc();
+        let task_id = self.as_ref().runtime.alloc::<O>();
         let task_id_copy = task_id.clone();
         let runtime = self.as_ref().runtime.clone();
         let options = self.as_ref().options.clone();
@@ -716,7 +715,7 @@ impl<P: AsRef<Path> + Send + 'static, O: Default + 'static> Future for AsyncOpen
             }
 
             //唤醒等待异步打开文件的任务
-            runtime.wakeup(&task_id_copy);
+            runtime.wakeup::<O>(&task_id_copy);
 
             //返回当前异步任务的默认值
             Default::default()
@@ -724,7 +723,7 @@ impl<P: AsRef<Path> + Send + 'static, O: Default + 'static> Future for AsyncOpen
 
         //挂起当前任务，并返回值未就绪
         self.as_ref().runtime.pending::<()>(&task_id, cx.waker().clone());
-        if let Err(e) = self.as_ref().runtime.spawn(task_id, task) {
+        if let Err(e) = self.as_ref().runtime.spawn_by_id(task_id, task) {
             //派发异步打开文件的任务失败，则立即返回错误原因
             return Poll::Ready(Err(Error::new(ErrorKind::Other, format!("Async Open File Error, path: {:?}, reason: {:?}", self.as_ref().path.as_ref(), e))));
         }
@@ -780,7 +779,7 @@ impl<O: Default + 'static> Future for AsyncReadFile<O> {
         }
 
         //从指定位置开始异步读指定字节
-        let task_id = self.as_ref().runtime.alloc();
+        let task_id = self.as_ref().runtime.alloc::<O>();
         let task_id_copy = task_id.clone();
         let runtime = self.as_ref().runtime.clone();
         let mut buf = self.as_mut().buf.take().unwrap();
@@ -823,7 +822,7 @@ impl<O: Default + 'static> Future for AsyncReadFile<O> {
             }
 
             //唤醒等待异步读指定字节的任务
-            runtime.wakeup(&task_id_copy);
+            runtime.wakeup::<O>(&task_id_copy);
 
             //返回当前异步任务的默认值
             Default::default()
@@ -831,7 +830,7 @@ impl<O: Default + 'static> Future for AsyncReadFile<O> {
 
         //挂起当前任务，并返回值未就绪
         self.as_ref().runtime.pending::<()>(&task_id, cx.waker().clone());
-        if let Err(e) = self.as_ref().runtime.spawn(task_id, task) {
+        if let Err(e) = self.as_ref().runtime.spawn_by_id(task_id, task) {
             //派发异步读指定字节的任务失败，则立即返回错误原因
             return Poll::Ready(Err(Error::new(ErrorKind::Other, format!("Async Read File Error, path: {:?}, reason: {:?}", self.as_ref().file.0.path, e))));
         }
@@ -919,7 +918,7 @@ impl<O: Default + 'static> Future for AsyncWriteFile<O> {
         }
 
         //从指定位置开始异步读指定字节
-        let task_id = self.as_ref().runtime.alloc();
+        let task_id = self.as_ref().runtime.alloc::<O>();
         let task_id_copy = task_id.clone();
         let runtime = self.as_ref().runtime.clone();
         let buf = self.as_mut().buf.clone();
@@ -1003,7 +1002,7 @@ impl<O: Default + 'static> Future for AsyncWriteFile<O> {
             }
 
             //唤醒等待异步写指定字节的任务
-            runtime.wakeup(&task_id_copy);
+            runtime.wakeup::<O>(&task_id_copy);
 
             //返回当前异步任务的默认值
             Default::default()
@@ -1011,7 +1010,7 @@ impl<O: Default + 'static> Future for AsyncWriteFile<O> {
 
         //挂起当前任务，并返回值未就绪
         self.as_ref().runtime.pending::<()>(&task_id, cx.waker().clone());
-        if let Err(e) = self.as_ref().runtime.spawn(task_id, task) {
+        if let Err(e) = self.as_ref().runtime.spawn_by_id(task_id, task) {
             //派发异步写指定字节的任务失败，则立即返回错误原因
             return Poll::Ready(Err(Error::new(ErrorKind::Other, format!("Async Write File Error, path: {:?}, reason: {:?}", self.as_ref().file.0.path, e))));
         }
@@ -1066,7 +1065,7 @@ impl<O: Default + 'static> Future for AsyncWriteBatchFile<O> {
         }
 
         //从指定位置开始异步读指定字节
-        let task_id = self.as_ref().runtime.alloc();
+        let task_id = self.as_ref().runtime.alloc::<O>();
         let task_id_copy = task_id.clone();
         let runtime = self.as_ref().runtime.clone();
         let bufs = self.as_ref().buf.clone();
@@ -1168,7 +1167,7 @@ impl<O: Default + 'static> Future for AsyncWriteBatchFile<O> {
             }
 
             //唤醒等待异步写指定字节的任务
-            runtime.wakeup(&task_id_copy);
+            runtime.wakeup::<O>(&task_id_copy);
 
             //返回当前异步任务的默认值
             Default::default()
@@ -1176,7 +1175,7 @@ impl<O: Default + 'static> Future for AsyncWriteBatchFile<O> {
 
         //挂起当前任务，并返回值未就绪
         self.as_ref().runtime.pending::<()>(&task_id, cx.waker().clone());
-        if let Err(e) = self.as_ref().runtime.spawn(task_id, task) {
+        if let Err(e) = self.as_ref().runtime.spawn_by_id(task_id, task) {
             //派发异步写指定字节的任务失败，则立即返回错误原因
             return Poll::Ready(Err(Error::new(ErrorKind::Other, format!("Async Write File Error, path: {:?}, reason: {:?}", self.as_ref().file.0.path, e))));
         }

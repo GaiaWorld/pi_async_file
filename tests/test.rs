@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::io::ErrorKind;
 use std::time::Duration;
 
-use pi_async::rt::{AsyncRuntime,
-                   multi_thread::{MultiTaskRuntimeBuilder, MultiTaskRuntime}};
+use pi_async_rt::rt::{AsyncRuntime,
+                      multi_thread::{MultiTaskRuntimeBuilder, MultiTaskRuntime}};
 use pi_async_file::file::{create_dir, rename, remove_file, remove_dir, AsyncFileOptions, WriteOptions, AsyncFile};
 
 #[test]
@@ -69,7 +69,7 @@ fn test_async_file() {
             },
         }
     };
-    if let Err(e) = rt.spawn(rt.alloc(), future) {
+    if let Err(e) = rt.spawn(future) {
         panic!("spawn test file task failed, reason: {:?}", e);
     }
 
@@ -144,7 +144,7 @@ fn test_async_file_truncate_read_write() {
             },
         }
     };
-    if let Err(e) = rt.spawn(rt.alloc(), future) {
+    if let Err(e) = rt.spawn(future) {
         panic!("spawn test file task failed, reason: {:?}", e);
     }
 
@@ -220,7 +220,7 @@ fn test_async_file_write_truncate() {
             },
         }
     };
-    if let Err(e) = rt.spawn(rt.alloc(), future) {
+    if let Err(e) = rt.spawn(future) {
         panic!("spawn test file task failed, reason: {:?}", e);
     }
 
