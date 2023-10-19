@@ -2,29 +2,118 @@
 //!
 
 use std::pin::Pin;
-use std::sync::Arc;
+use std::cell::RefCell;
 use std::time::Duration;
 use std::future::Future;
 use std::time::SystemTime;
-use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::slice::from_raw_parts;
+use std::task::{Context, Poll};
+use std::sync::{Arc, OnceLock};
+use std::collections::BTreeMap;
 #[cfg(any(unix))]
 use std::os::unix::fs::FileExt;
 #[cfg(any(windows))]
 use std::os::windows::fs::FileExt;
-use std::task::{Context, Poll};
-use std::fmt::{Debug, Formatter, Result as FmtResult};
+use std::io::{Write, Result, Error, ErrorKind};
 use std::fs::{File, OpenOptions,
               rename as sync_rename,
               create_dir_all as sync_create_dir_all,
               remove_file as sync_remove_file,
               copy as sync_copy,
               remove_dir as sync_remove_dir};
-use std::io::{Write, Result, Error, ErrorKind};
+use std::fmt::{Debug, Formatter, Result as FmtResult};
 
 use parking_lot::RwLock;
-use pi_async_rt::rt::{AsyncRuntime, multi_thread::MultiTaskRuntime};
+use pi_async_rt::rt::{AsyncRuntime,
+                      multi_thread::MultiTaskRuntime};
+use crossbeam_utils::sync::ShardedLock;
+use sysinfo::{SystemExt, DiskExt, System};
+use normpath::PathExt;
+
+///
+/// 磁盘可用容量表
+///
+static DISK_AVAILABLES: OnceLock<ShardedLock<BTreeMap<PathBuf, (bool, u64, u64)>>> = OnceLock::new();
+
+/// 初始化磁盘可用容量表
+pub fn init_disk_availables(rt: MultiTaskRuntime<()>,
+                            useable_ratio: u64,
+                            mut interval: usize) -> Result<()> {
+    if interval < 1000 {
+        interval = 1000;
+    }
+
+    let mut map = BTreeMap::new();
+    let mut system = System::new();
+
+    system.refresh_disks_list();
+    for disk in system.disks() {
+        let available = disk.available_space();
+        let available_ratio = ((available as f64 / disk.total_space() as f64) * 100.0) as u64;
+        map.insert(disk.mount_point().to_path_buf(),
+                   (useable_ratio < available_ratio, available, available_ratio));
+    }
+
+    if let Err(e) = DISK_AVAILABLES.set(ShardedLock::new(map)) {
+        Err(Error::new(ErrorKind::Other,
+                       format!("Init disk availables failed, reason: {:?}", e)))
+    } else {
+        collect_disk_availables(rt, system, useable_ratio, interval);
+        Ok(())
+    }
+}
+
+// 整理磁盘可用容量表
+fn collect_disk_availables(rt: MultiTaskRuntime<()>,
+                           mut system: System,
+                           useable_ratio: u64,
+                           interval: usize) {
+    let rt_copy = rt.clone();
+    rt.spawn(async move {
+        loop {
+            system.refresh_disks_list();
+
+            if let Some(disk_availables) = DISK_AVAILABLES.get() {
+                for disk in system.disks() {
+                    let path = disk.mount_point().to_path_buf();
+                    let available = disk.available_space();
+                    let total = disk.total_space();
+                    let available_ratio = ((available as f64 / total as f64) * 100.0) as u64;
+
+                    disk_availables
+                        .write()
+                        .unwrap()
+                        .insert(path,
+                            (useable_ratio <= available_ratio, available, available_ratio));
+                }
+            }
+
+            rt_copy.timeout(interval).await;
+        }
+    });
+}
+
+/// 获取指定路径所在磁盘的可用状态，可用容量和可用比率
+pub fn disk_available<P: AsRef<Path>>(path: P) -> Option<(bool, u64, u64)> {
+    if let Some(disk_availables) = DISK_AVAILABLES.get() {
+        let availables: Vec<(PathBuf, (bool, u64, u64))> = disk_availables
+            .read()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        let p = path.as_ref();
+        for (key, value) in availables {
+            if p.starts_with(key) {
+                return Some(value);
+            }
+        }
+    }
+
+    None
+}
 
 /*
 * 异步重命名指定的文件的结果
@@ -617,6 +706,30 @@ impl<O: Default + 'static> AsyncFile<O> {
             //无效的字节数，则立即返回
             return Ok(0);
         }
+        if let Ok(normal_path) = self.0.path.normalize() {
+            //有标准路径
+            if let Some((is_writable, available, available_ratio)) = disk_available(&normal_path) {
+                //当前文件在有效的磁盘上
+                if !is_writable {
+                    //当前磁盘可用容量已达限制，则立即中止写操作，并返回错误原因
+                    return Err(Error::new(ErrorKind::StorageFull,
+                                          format!("Async write file failed, file: {:?}, available: {:?}, available_ratio: {:?}, reason: out of disk",
+                                                  &normal_path,
+                                                  available,
+                                                  available_ratio)));
+                }
+
+                if slice.len() as u64 >= available {
+                    //当前磁盘可用容量不允许本次写完成，则立即中止写操作，并返回错误原因
+                    return Err(Error::new(ErrorKind::StorageFull,
+                                          format!("Async write file failed, file: {:?}, buf len: {:?}, available: {:?}, available_ratio: {:?}, reason: out of disk",
+                                                  &normal_path,
+                                                  slice.len(),
+                                                  available,
+                                                  available_ratio)));
+                }
+            }
+        }
 
         let buf: Binary = slice.into();
         AsyncWriteFile::new(self.0.runtime.clone(),
@@ -633,6 +746,34 @@ impl<O: Default + 'static> AsyncFile<O> {
         if buf.len() == 0 {
             //无效的长度，则立即返回
             return Ok(0);
+        }
+        if let Ok(normal_path) = self.0.path.normalize() {
+            //有标准路径
+            if let Some((is_writable, available, available_ratio)) = disk_available(&normal_path) {
+                //当前文件在有效的磁盘上
+                if !is_writable {
+                    //当前磁盘可用容量已达限制，则立即中止写操作，并返回错误原因
+                    return Err(Error::new(ErrorKind::StorageFull,
+                                          format!("Async write file failed, file: {:?}, available: {:?}, available_ratio: {:?}, reason: out of disk",
+                                                  &normal_path,
+                                                  available,
+                                                  available_ratio)));
+                }
+
+                let mut buf_len = 0;
+                for b in buf.as_ref() {
+                    buf_len += b.len();
+                }
+                if buf_len as u64 >= available {
+                    //当前磁盘可用容量不允许本次写完成，则立即中止写操作，并返回错误原因
+                    return Err(Error::new(ErrorKind::StorageFull,
+                                          format!("Async write file failed, file: {:?}, buf len: {:?}, available: {:?}, available_ratio: {:?}, reason: out of disk",
+                                                  &normal_path,
+                                                  buf_len,
+                                                  available,
+                                                  available_ratio)));
+                }
+            }
         }
 
         AsyncWriteBatchFile::new(self.0.runtime.clone(), buf, 0, 0, self.clone(), pos, options, 0).await
