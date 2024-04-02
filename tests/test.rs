@@ -1,7 +1,8 @@
 use std::thread;
-use std::sync::Arc;
 use std::io::ErrorKind;
 use std::time::Duration;
+use std::sync::{Arc,
+                mpsc::channel};
 
 use pi_async_rt::rt::{AsyncRuntime,
                       startup_global_time_loop,
@@ -304,4 +305,38 @@ fn test_write_by_disk_full() {
     }
 
     thread::sleep(Duration::from_millis(10000));
+}
+
+#[test]
+fn test_rename() {
+    let _handle = startup_global_time_loop(10);
+    let builder = MultiTaskRuntimeBuilder::default();
+    let rt: MultiTaskRuntime<()> = builder.build();
+
+    let mut index = 0;
+    let (sender, receiver) = channel();
+    let mut file = "./test_async_file/tmp/tmp".to_string();
+    loop {
+        let from_file = file.clone() + "." + index.to_string().as_str();
+        let to_file = file.clone() + "." + (index + 1).to_string().as_str();
+
+        let rt_copy = rt.clone();
+        let sender_copy = sender.clone();
+        rt.spawn(async move {
+            if let Err(e) = rename(rt_copy, from_file.clone(), to_file.clone()).await {
+                panic!("rename file failed, from: {:?}, to: {:?}, reason: {:?}", from_file, to_file, e);
+            }
+
+            sender_copy.send(());
+        });
+
+        match receiver.recv() {
+            Err(e) => {
+                panic!("receive failed, reason: {:?}", e);
+            },
+            Ok(_) => {
+                index += 1;
+            },
+        }
+    }
 }
